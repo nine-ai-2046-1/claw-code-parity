@@ -1505,6 +1505,7 @@ struct LiveCli {
     system_prompt: Vec<String>,
     runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
     session: SessionHandle,
+    provider: Option<String>,
 }
 
 struct HookAbortMonitor {
@@ -1583,7 +1584,7 @@ impl LiveCli {
             allowed_tools.clone(),
             permission_mode,
             None,
-            provider,
+            provider.clone(),
         )?;
         let cli = Self {
             model,
@@ -1592,6 +1593,7 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
+            provider,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -1673,7 +1675,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
-            None, // provider
+            self.provider.clone(),
         )?
         .with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
