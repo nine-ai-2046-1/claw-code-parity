@@ -163,19 +163,68 @@ pub fn metadata_for_model(model: &str) -> Option<ProviderMetadata> {
 
 #[must_use]
 pub fn detect_provider_kind(model: &str) -> ProviderKind {
-    if let Some(metadata) = metadata_for_model(model) {
-        return metadata.provider;
+    detect_provider_kind_with_override(model, None).unwrap_or(ProviderKind::Anthropic)
+}
+
+/// Map a provider name string to a `ProviderKind`.
+/// Returns `None` for unrecognised names.
+pub fn provider_kind_from_str(s: &str) -> Option<ProviderKind> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "anthropic" | "claude" => Some(ProviderKind::Anthropic),
+        "openai" | "openai-compat" | "poe" | "groq" | "azure" | "openrouter" | "gemini" => {
+            Some(ProviderKind::OpenAi)
+        }
+        "xai" | "grok" => Some(ProviderKind::Xai),
+        _ => None,
     }
+}
+
+/// Detect provider with optional explicit override (from `--provider` flag).
+/// Priority: explicit override > model registry > credentials > fallback Anthropic.
+/// Returns `Err` if `explicit_provider` is set but unrecognised.
+pub fn detect_provider_kind_with_override(
+    model: &str,
+    explicit_provider: Option<&str>,
+) -> Result<ProviderKind, String> {
+    // 1. Explicit override (CLI flag — highest priority)
+    if let Some(provider_str) = explicit_provider {
+        return provider_kind_from_str(provider_str).ok_or_else(|| {
+            format!(
+                "unrecognised provider '{}'. Supported: anthropic, claude, openai, xai, poe, groq, azure, openrouter, gemini",
+                provider_str
+            )
+        });
+    }
+
+    // 2. CLAW_PROVIDER env var (warn but don't error on unrecognised value)
+    if let Ok(env_provider) = std::env::var("CLAW_PROVIDER") {
+        if let Some(kind) = provider_kind_from_str(&env_provider) {
+            return Ok(kind);
+        }
+        eprintln!(
+            "warning: unrecognised CLAW_PROVIDER '{}', ignoring",
+            env_provider
+        );
+    }
+
+    // 3. Model name registry
+    if let Some(metadata) = metadata_for_model(model) {
+        return Ok(metadata.provider);
+    }
+
+    // 4. Available credentials
     if anthropic::has_auth_from_env_or_saved().unwrap_or(false) {
-        return ProviderKind::Anthropic;
+        return Ok(ProviderKind::Anthropic);
     }
     if openai_compat::has_api_key("OPENAI_API_KEY") {
-        return ProviderKind::OpenAi;
+        return Ok(ProviderKind::OpenAi);
     }
     if openai_compat::has_api_key("XAI_API_KEY") {
-        return ProviderKind::Xai;
+        return Ok(ProviderKind::Xai);
     }
-    ProviderKind::Anthropic
+
+    // 5. Fallback
+    Ok(ProviderKind::Anthropic)
 }
 
 #[must_use]
@@ -190,7 +239,10 @@ pub fn max_tokens_for_model(model: &str) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_provider_kind, max_tokens_for_model, resolve_model_alias, ProviderKind};
+    use super::{
+        detect_provider_kind, detect_provider_kind_with_override, max_tokens_for_model,
+        provider_kind_from_str, resolve_model_alias, ProviderKind,
+    };
 
     #[test]
     fn resolves_grok_aliases() {
@@ -212,5 +264,48 @@ mod tests {
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
         assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+    }
+
+    #[test]
+    fn provider_kind_from_str_maps_known_providers() {
+        assert_eq!(provider_kind_from_str("anthropic"), Some(ProviderKind::Anthropic));
+        assert_eq!(provider_kind_from_str("claude"), Some(ProviderKind::Anthropic));
+        assert_eq!(provider_kind_from_str("openai"), Some(ProviderKind::OpenAi));
+        assert_eq!(provider_kind_from_str("gemini"), Some(ProviderKind::OpenAi));
+        assert_eq!(provider_kind_from_str("groq"), Some(ProviderKind::OpenAi));
+        assert_eq!(provider_kind_from_str("xai"), Some(ProviderKind::Xai));
+        assert_eq!(provider_kind_from_str("grok"), Some(ProviderKind::Xai));
+        assert_eq!(provider_kind_from_str("unknown"), None);
+    }
+
+    #[test]
+    fn provider_kind_from_str_is_case_insensitive() {
+        assert_eq!(provider_kind_from_str("OPENAI"), Some(ProviderKind::OpenAi));
+        assert_eq!(provider_kind_from_str("Gemini"), Some(ProviderKind::OpenAi));
+    }
+
+    #[test]
+    fn detect_with_override_respects_explicit_provider() {
+        assert_eq!(
+            detect_provider_kind_with_override("claude-sonnet-4-6", Some("openai")),
+            Ok(ProviderKind::OpenAi)
+        );
+        assert_eq!(
+            detect_provider_kind_with_override("grok-3", Some("anthropic")),
+            Ok(ProviderKind::Anthropic)
+        );
+    }
+
+    #[test]
+    fn detect_with_override_errors_on_unknown_provider() {
+        assert!(detect_provider_kind_with_override("claude-sonnet-4-6", Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn detect_with_no_override_falls_back_to_model_registry() {
+        assert_eq!(
+            detect_provider_kind_with_override("grok-3", None),
+            Ok(ProviderKind::Xai)
+        );
     }
 }

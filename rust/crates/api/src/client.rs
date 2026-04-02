@@ -36,8 +36,18 @@ impl ProviderClient {
         model: &str,
         anthropic_auth: Option<AuthSource>,
     ) -> Result<Self, ApiError> {
+        Self::from_model_with_override(model, anthropic_auth, None)
+    }
+
+    pub fn from_model_with_override(
+        model: &str,
+        anthropic_auth: Option<AuthSource>,
+        provider_override: Option<&str>,
+    ) -> Result<Self, ApiError> {
         let resolved_model = providers::resolve_model_alias(model);
-        match providers::detect_provider_kind(&resolved_model) {
+        let kind = providers::detect_provider_kind_with_override(&resolved_model, provider_override)
+            .map_err(|e| ApiError::Auth(e))?;
+        match kind {
             ProviderKind::Anthropic => Ok(Self::Anthropic(match anthropic_auth {
                 Some(auth) => AnthropicClient::from_auth(auth),
                 None => AnthropicClient::from_env()?,
