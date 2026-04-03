@@ -266,6 +266,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("<task> [--yes]"),
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "kairos",
+        aliases: &[],
+        summary: "Coordinator + Workers architecture: delegate subtasks with XML notifications",
+        argument_hint: Some("<task>"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -339,6 +346,9 @@ pub enum SlashCommand {
     Batch {
         task: Option<String>,
         yes: bool,
+    },
+    Kairos {
+        task: Option<String>,
     },
     Unknown(String),
 }
@@ -478,7 +488,12 @@ pub fn validate_slash_command_input(
             }),
         },
         "dream" => SlashCommand::Dream,
-        "buddy" => SlashCommand::Buddy,
+        "kairos" => SlashCommand::Kairos {
+            task: remainder.and_then(|s| {
+                let t = s.trim();
+                if t.is_empty() { None } else { Some(t.to_string()) }
+            }),
+        },
         "batch" => {
             let (yes, task_str) = match remainder {
                 Some(s) if s.trim_start().starts_with("--yes") => {
@@ -1741,6 +1756,7 @@ pub fn handle_slash_command(
         | SlashCommand::Dream
         | SlashCommand::Buddy
         | SlashCommand::Batch { .. }
+        | SlashCommand::Kairos { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2137,7 +2153,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 31);
+        assert_eq!(slash_command_specs().len(), 32);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 

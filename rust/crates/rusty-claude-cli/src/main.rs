@@ -1426,7 +1426,8 @@ fn run_resume_command(
         | SlashCommand::Simplify { .. }
         | SlashCommand::Dream
         | SlashCommand::Buddy
-        | SlashCommand::Batch { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Batch { .. }
+        | SlashCommand::Kairos { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1878,6 +1879,10 @@ impl LiveCli {
             }
             SlashCommand::Batch { task, yes } => {
                 self.run_batch(task.as_deref(), yes)?;
+                false
+            }
+            SlashCommand::Kairos { task } => {
+                self.run_kairos(task.as_deref())?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2462,6 +2467,94 @@ Output only the SKILL.md content, no other explanation."#,
         Ok(())
     }
 
+    fn run_kairos(&self, task: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let task = match task {
+            Some(t) if !t.trim().is_empty() => t.trim(),
+            _ => {
+                println!("Kairos\n  Usage  /kairos <task description>");
+                return Ok(());
+            }
+        };
+
+        const BLOCKING_BUDGET_SECS: u64 = 15;
+
+        // Coordinator: analyse and decompose
+        let coord_prompt = format!(
+            "You are a Coordinator. Analyse this task and decompose it into independent subtasks.\nDo NOT thank or acknowledge workers — they are internal signals, not conversation partners.\nDo NOT predict results.\n\nTask: {task}\n\nRespond with JSON only:\n{{\"subtasks\":[{{\"id\":1,\"title\":\"...\",\"description\":\"...\"}}]}}"
+        );
+        println!("Kairos\n  🎯 Coordinator analysing: {task}\n");
+        let coord_text = self.run_internal_prompt_text(&coord_prompt, false)?;
+
+        let json_str = if let (Some(s), Some(e)) = (coord_text.find('{'), coord_text.rfind('}')) {
+            &coord_text[s..=e]
+        } else {
+            println!("  Result           failed\n  Reason           coordinator could not decompose task");
+            return Ok(());
+        };
+        let plan: serde_json::Value = serde_json::from_str(json_str).unwrap_or(serde_json::Value::Null);
+        let subtasks = match plan["subtasks"].as_array() {
+            Some(s) if !s.is_empty() => s.clone(),
+            _ => {
+                println!("  Result           failed\n  Reason           no subtasks generated");
+                return Ok(());
+            }
+        };
+
+        println!("  📋 Dispatching {} workers:\n", subtasks.len());
+
+        // Workers: execute with blocking budget
+        let mut notifications = Vec::new();
+        for st in &subtasks {
+            let id = st["id"].as_u64().unwrap_or(0);
+            let title = st["title"].as_str().unwrap_or("?");
+            let desc = st["description"].as_str().unwrap_or("");
+
+            print!("  🔄 Worker {id}: {title}... ");
+            use std::io::Write;
+            std::io::stdout().flush()?;
+
+            let worker_prompt = format!(
+                "You are a Worker. Complete this subtask and report back.\n\nSubtask: {title}\nDescription: {desc}\n\nRespond with:\nSTATUS: SUCCESS or FAILED\nSUMMARY: one-line summary\nDETAILS: details"
+            );
+
+            let start = std::time::Instant::now();
+            let result = self.run_internal_prompt_text(&worker_prompt, false);
+            let duration_ms = start.elapsed().as_millis();
+
+            let (status, summary) = match result {
+                Ok(text) if duration_ms < (BLOCKING_BUDGET_SECS * 1000) as u128 => {
+                    let success = text.contains("STATUS: SUCCESS");
+                    let sum = text.lines()
+                        .find(|l| l.starts_with("SUMMARY:"))
+                        .map(|l| l.trim_start_matches("SUMMARY:").trim().to_string())
+                        .unwrap_or_else(|| if success { "completed".to_string() } else { "failed".to_string() });
+                    (if success { "completed".to_string() } else { "failed".to_string() }, sum)
+                }
+                _ => ("timeout".to_string(), format!("exceeded {BLOCKING_BUDGET_SECS}s budget")),
+            };
+
+            let icon = if status == "completed" { "✅" } else { "❌" };
+            println!("{icon} ({duration_ms}ms)");
+
+            // Format XML notification
+            let xml = format!(
+                "<task-notification><task-id>{id}</task-id><status>{status}</status><summary>{}</summary><usage><duration_ms>{duration_ms}</duration_ms></usage></task-notification>",
+                html_escape(&summary)
+            );
+            notifications.push((id, status, summary, xml));
+        }
+
+        // Coordinator integrates results (no thanks to workers)
+        println!("\n  📊 Results:");
+        let succeeded = notifications.iter().filter(|(_, s, _, _)| s == "completed").count();
+        for (id, status, summary, _) in &notifications {
+            let icon = if status == "completed" { "✅" } else { "❌" };
+            println!("    {icon} Worker {id}: {summary}");
+        }
+        println!("\n  Result           {succeeded}/{} workers succeeded", subtasks.len());
+        Ok(())
+    }
+
     fn run_batch(&self, task: Option<&str>, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
         let task = match task {
             Some(t) if !t.trim().is_empty() => t.trim(),
@@ -2750,6 +2843,10 @@ Output only the SKILL.md content, no other explanation."#,
 
         Ok(())
     }
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn sessions_dir() -> Result<PathBuf, Box<dyn std::error::Error>> {
