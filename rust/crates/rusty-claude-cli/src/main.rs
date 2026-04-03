@@ -1421,7 +1421,8 @@ fn run_resume_command(
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
-        | SlashCommand::Plugins { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Plugins { .. }
+        | SlashCommand::Skillify { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1853,6 +1854,10 @@ impl LiveCli {
             }
             SlashCommand::Skills { args } => {
                 Self::print_skills(args.as_deref())?;
+                false
+            }
+            SlashCommand::Skillify { output } => {
+                self.run_skillify(output.as_deref())?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2341,6 +2346,99 @@ impl LiveCli {
 
     fn run_issue(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", format_issue_report(context));
+        Ok(())
+    }
+
+    fn run_skillify(&self, output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let messages = &self.runtime.session().messages;
+        if messages.is_empty() {
+            println!("Skillify\n  Result           skipped\n  Reason           no conversation history to analyse");
+            return Ok(());
+        }
+
+        // Format conversation for the prompt
+        let conversation: String = messages
+            .iter()
+            .filter_map(|msg| {
+                let role = match msg.role {
+                    runtime::MessageRole::User => "USER",
+                    runtime::MessageRole::Assistant => "ASSISTANT",
+                    _ => return None,
+                };
+                let text: String = msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        runtime::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(format!("[{role}]: {}", &text[..text.len().min(800)]))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let prompt = format!(
+            r#"You are a Skill design expert. Analyse the following conversation and generate a SKILL.md file in this exact format:
+
+---
+name: {{skill-name}}
+description: {{one-line description}}
+when_to_use: |
+  {{when to trigger this skill, with examples}}
+argument-hint: "{{argument hint}}"
+---
+
+# {{Skill Title}}
+
+## Goal
+{{clear description of the skill's goal}}
+
+## Steps
+
+### 1. {{Step name}}
+{{step description}}
+
+**Success criteria**: {{how to know this step is done}}
+
+### 2. {{Step name}}
+...
+
+Rules:
+- Identify repeatable workflow patterns
+- Find user preferences and corrections
+- Determine input parameters
+- Each step must have clear success criteria
+- Write descriptions in the same language as the conversation
+
+Conversation:
+{conversation}
+
+Output only the SKILL.md content, no other explanation."#,
+            conversation = conversation
+        );
+
+        println!("Skillify\n  Analysing {} messages...", messages.len());
+        let skill_md = self.run_internal_prompt_text(&prompt, false)?;
+
+        match output {
+            Some(path) => {
+                let output_path = std::path::Path::new(path);
+                if let Some(parent) = output_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(output_path, &skill_md)?;
+                println!("  Result           written\n  File             {path}");
+            }
+            None => {
+                println!("  Result           generated\n\n{skill_md}");
+            }
+        }
         Ok(())
     }
 }
