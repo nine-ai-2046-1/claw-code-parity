@@ -252,6 +252,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: None,
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "buddy",
+        aliases: &[],
+        summary: "Show your companion (or hatch one if you don't have one yet)",
+        argument_hint: None,
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -321,6 +328,7 @@ pub enum SlashCommand {
         files: Option<String>,
     },
     Dream,
+    Buddy,
     Unknown(String),
 }
 
@@ -459,6 +467,7 @@ pub fn validate_slash_command_input(
             }),
         },
         "dream" => SlashCommand::Dream,
+        "buddy" => SlashCommand::Buddy,
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1706,6 +1715,7 @@ pub fn handle_slash_command(
         | SlashCommand::Skillify { .. }
         | SlashCommand::Simplify { .. }
         | SlashCommand::Dream
+        | SlashCommand::Buddy
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2102,7 +2112,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 29);
+        assert_eq!(slash_command_specs().len(), 30);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
