@@ -1422,7 +1422,8 @@ fn run_resume_command(
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
         | SlashCommand::Plugins { .. }
-        | SlashCommand::Skillify { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Skillify { .. }
+        | SlashCommand::Simplify { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1858,6 +1859,10 @@ impl LiveCli {
             }
             SlashCommand::Skillify { output } => {
                 self.run_skillify(output.as_deref())?;
+                false
+            }
+            SlashCommand::Simplify { files } => {
+                self.run_simplify(files.as_deref())?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2439,6 +2444,65 @@ Output only the SKILL.md content, no other explanation."#,
                 println!("  Result           generated\n\n{skill_md}");
             }
         }
+        Ok(())
+    }
+
+    fn run_simplify(&self, files: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        // Get code to review: glob pattern, or git diff
+        let code = if let Some(pattern) = files {
+            let paths: Vec<_> = glob::glob(pattern)
+                .map_err(|e| format!("invalid glob pattern: {e}"))?
+                .filter_map(|p| p.ok())
+                .take(10)
+                .collect();
+            if paths.is_empty() {
+                println!("Simplify\n  Result           skipped\n  Reason           no files matched '{pattern}'");
+                return Ok(());
+            }
+            let mut parts = Vec::new();
+            for path in &paths {
+                if let Ok(content) = fs::read_to_string(path) {
+                    parts.push(format!("=== {} ===\n{}", path.display(), &content[..content.len().min(4000)]));
+                }
+            }
+            parts.join("\n\n")
+        } else {
+            // Default: git diff HEAD
+            let output = std::process::Command::new("git")
+                .args(["diff", "HEAD"])
+                .current_dir(env::current_dir()?)
+                .output();
+            match output {
+                Ok(out) if !out.stdout.is_empty() => {
+                    String::from_utf8_lossy(&out.stdout)[..out.stdout.len().min(8000)].to_string()
+                }
+                _ => {
+                    println!("Simplify\n  Result           skipped\n  Reason           no git diff found (try /simplify <glob-pattern>)");
+                    return Ok(());
+                }
+            }
+        };
+
+        const REUSE_PROMPT: &str = "You are a code reuse reviewer. Review the following code changes and find:\n1. Duplicated functionality (new code that duplicates existing code)\n2. Inline logic that could use existing utilities\n3. Suggested existing functions/modules to use instead\n\nFormat: one issue per line as `[file:line] description`\nIf no issues: output `✅ No code reuse issues`\n\nCode:\n{code}";
+        const QUALITY_PROMPT: &str = "You are a code quality reviewer. Review the following code changes and find:\n1. Redundant state or derivable values\n2. Parameter bloat\n3. Copy-paste code that should be abstracted\n4. Leaky abstractions\n5. String type abuse (use constants/enums instead)\n6. Unnecessary comments (explaining WHAT not WHY)\n\nFormat: one issue per line as `[file:line] description`\nIf no issues: output `✅ No code quality issues`\n\nCode:\n{code}";
+        const EFFICIENCY_PROMPT: &str = "You are a code efficiency reviewer. Review the following code changes and find:\n1. Unnecessary computations (repeated calculations, cacheable values)\n2. Missed parallelism opportunities\n3. N+1 problems (I/O inside loops)\n4. Memory leaks (uncleaned resources)\n5. Over-broad operations (reading entire file when only part needed)\n\nFormat: one issue per line as `[file:line] description`\nIf no issues: output `✅ No efficiency issues`\n\nCode:\n{code}";
+
+        println!("Simplify\n  Running 3-dimension review...\n");
+
+        let make_prompt = |template: &str| template.replace("{code}", &code);
+
+        println!("🔄 Reuse Review");
+        let reuse = self.run_internal_prompt_text(&make_prompt(REUSE_PROMPT), false)?;
+        println!("{reuse}\n");
+
+        println!("🎯 Quality Review");
+        let quality = self.run_internal_prompt_text(&make_prompt(QUALITY_PROMPT), false)?;
+        println!("{quality}\n");
+
+        println!("⚡ Efficiency Review");
+        let efficiency = self.run_internal_prompt_text(&make_prompt(EFFICIENCY_PROMPT), false)?;
+        println!("{efficiency}");
+
         Ok(())
     }
 }

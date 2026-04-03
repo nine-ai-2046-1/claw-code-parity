@@ -238,6 +238,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("[output-path]"),
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "simplify",
+        aliases: &[],
+        summary: "Run a 3-dimension code review (Reuse · Quality · Efficiency)",
+        argument_hint: Some("[glob-pattern]"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +309,9 @@ pub enum SlashCommand {
     },
     Skillify {
         output: Option<String>,
+    },
+    Simplify {
+        files: Option<String>,
     },
     Unknown(String),
 }
@@ -430,6 +440,12 @@ pub fn validate_slash_command_input(
         },
         "skillify" => SlashCommand::Skillify {
             output: remainder.and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+            }),
+        },
+        "simplify" => SlashCommand::Simplify {
+            files: remainder.and_then(|s| {
                 let trimmed = s.trim();
                 if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
             }),
@@ -1679,6 +1695,7 @@ pub fn handle_slash_command(
         | SlashCommand::Agents { .. }
         | SlashCommand::Skills { .. }
         | SlashCommand::Skillify { .. }
+        | SlashCommand::Simplify { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2075,7 +2092,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 27);
+        assert_eq!(slash_command_specs().len(), 28);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
