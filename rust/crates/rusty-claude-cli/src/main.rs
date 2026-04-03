@@ -1424,7 +1424,8 @@ fn run_resume_command(
         | SlashCommand::Plugins { .. }
         | SlashCommand::Skillify { .. }
         | SlashCommand::Simplify { .. }
-        | SlashCommand::Dream => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Dream
+        | SlashCommand::Buddy => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1868,6 +1869,10 @@ impl LiveCli {
             }
             SlashCommand::Dream => {
                 self.run_dream()?;
+                false
+            }
+            SlashCommand::Buddy => {
+                self.run_buddy()?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2449,6 +2454,106 @@ Output only the SKILL.md content, no other explanation."#,
                 println!("  Result           generated\n\n{skill_md}");
             }
         }
+        Ok(())
+    }
+
+    fn run_buddy(&self) -> Result<(), Box<dyn std::error::Error>> {
+        fn mulberry32(seed: u32) -> impl FnMut() -> f64 {
+            let mut a = seed;
+            move || {
+                a = a.wrapping_add(0x6D2B_79F5);
+                let mut t = ((a ^ (a >> 15)).wrapping_mul(1 | a)) as u64;
+                t = t.wrapping_add(((t ^ (t >> 7)).wrapping_mul(61 | t)) as u64);
+                ((t ^ (t >> 14)) & 0xFFFF_FFFF) as f64 / 4_294_967_296.0
+            }
+        }
+        fn fnv1a(s: &str) -> u32 {
+            let mut h: u32 = 2_166_136_261;
+            for b in s.bytes() { h ^= b as u32; h = h.wrapping_mul(16_777_619); }
+            h
+        }
+        fn pick<'a>(rng: &mut impl FnMut() -> f64, arr: &[&'a str]) -> &'a str {
+            arr[(rng() * arr.len() as f64) as usize]
+        }
+
+        const SALT: &str = "friend-2026-401";
+        const RARITIES: &[&str] = &["common","uncommon","rare","epic","legendary"];
+        const WEIGHTS: &[u32] = &[60, 25, 10, 4, 1];
+        const SPECIES: &[&str] = &["duck","goose","blob","cat","dragon","octopus","owl",
+            "penguin","turtle","snail","ghost","axolotl","capybara","cactus","robot","rabbit"];
+        const STATS: &[&str] = &["DEBUGGING","PATIENCE","CHAOS","WISDOM","SNARK"];
+        const STARS: &[&str] = &["★","★★","★★★","★★★★","★★★★★"];
+
+        let claw_dir = env::current_dir()?.join(".claw");
+        fs::create_dir_all(&claw_dir)?;
+        let soul_path = claw_dir.join("buddy.json");
+
+        // Load existing soul or create new one with a stable seed
+        let soul: serde_json::Value = if soul_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&soul_path)?).unwrap_or(serde_json::Value::Null)
+        } else {
+            // Generate stable seed from user identity (hostname + username)
+            let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+            let host = std::env::var("HOSTNAME").unwrap_or_else(|_| {
+                std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string()
+            });
+            let stable_seed = fnv1a(&format!("{user}{host}{SALT}"));
+            let mut init_rng = mulberry32(stable_seed);
+
+            let names = ["Pixel","Byte","Glitch","Spark","Echo","Nova","Flux","Zap","Rust","Ferris"];
+            let personalities = [
+                "Loves debugging, curious about every bug",
+                "Extremely patient, never gives up",
+                "Full of chaotic energy, finds unexpected solutions",
+                "Deep wisdom, always finds the most elegant approach",
+                "Snarky but lovable, has opinions about bad code",
+            ];
+            let soul = serde_json::json!({
+                "name": names[(init_rng() * names.len() as f64) as usize],
+                "personality": personalities[(init_rng() * personalities.len() as f64) as usize],
+                "seed": stable_seed,
+            });
+            fs::write(&soul_path, serde_json::to_string_pretty(&soul)?)?;
+            println!("🥚 A new companion hatched!\n");
+            soul
+        };
+
+        // Use stored seed for deterministic Bones
+        let seed = soul["seed"].as_u64().map(|s| s as u32)
+            .unwrap_or_else(|| fnv1a(&format!("{}{SALT}", soul["name"].as_str().unwrap_or(""))));
+        let mut rng = mulberry32(seed);
+
+        let total: u32 = WEIGHTS.iter().sum();
+        let mut roll = (rng() * total as f64) as u32;
+        let rarity_idx = WEIGHTS.iter().enumerate()
+            .find_map(|(i, &w)| if roll < w { Some(i) } else { roll -= w; None })
+            .unwrap_or(0);
+
+        let species = pick(&mut rng, SPECIES);
+        let shiny = rng() < 0.01;
+        let floor = [5u32, 15, 25, 35, 50][rarity_idx];
+        let peak = (rng() * STATS.len() as f64) as usize;
+        let dump = (peak + 1 + (rng() * (STATS.len() - 1) as f64) as usize) % STATS.len();
+        let stat_vals: Vec<u32> = (0..STATS.len()).map(|i| {
+            if i == peak { floor + (rng() * (100.0 - floor as f64)) as u32 }
+            else if i == dump { (rng() * floor as f64) as u32 }
+            else { floor + (rng() * (100.0 - floor as f64) / 2.0) as u32 }
+        }).collect();
+
+        let name = soul["name"].as_str().unwrap_or("???");
+        let personality = soul["personality"].as_str().unwrap_or("???");
+        let shiny_prefix = if shiny { "✨ SHINY " } else { "" };
+
+        println!("\n{shiny_prefix}{} {name} the {}", STARS[rarity_idx], species.to_uppercase());
+        println!("  Rarity      {}", RARITIES[rarity_idx].to_uppercase());
+        println!("  Personality {personality}");
+        println!("\n  Stats");
+        for (i, stat) in STATS.iter().enumerate() {
+            let v = stat_vals[i];
+            let bar = "█".repeat((v / 10) as usize) + &"░".repeat(10 - (v / 10) as usize);
+            println!("  {stat:<12} {bar} {v}");
+        }
+        println!();
         Ok(())
     }
 
