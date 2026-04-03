@@ -231,6 +231,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("[list|help]"),
         resume_supported: true,
     },
+    SlashCommandSpec {
+        name: "skillify",
+        aliases: &[],
+        summary: "Generate a SKILL.md from the current conversation",
+        argument_hint: Some("[output-path]"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -292,6 +299,9 @@ pub enum SlashCommand {
     },
     Skills {
         args: Option<String>,
+    },
+    Skillify {
+        output: Option<String>,
     },
     Unknown(String),
 }
@@ -417,6 +427,12 @@ pub fn validate_slash_command_input(
         },
         "skills" => SlashCommand::Skills {
             args: parse_list_or_help_args(command, remainder)?,
+        },
+        "skillify" => SlashCommand::Skillify {
+            output: remainder.and_then(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+            }),
         },
         other => SlashCommand::Unknown(other.to_string()),
     }))
@@ -1662,6 +1678,7 @@ pub fn handle_slash_command(
         | SlashCommand::Plugins { .. }
         | SlashCommand::Agents { .. }
         | SlashCommand::Skills { .. }
+        | SlashCommand::Skillify { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2058,7 +2075,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 26);
+        assert_eq!(slash_command_specs().len(), 27);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
