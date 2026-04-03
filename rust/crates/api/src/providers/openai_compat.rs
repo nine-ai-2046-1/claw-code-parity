@@ -288,6 +288,9 @@ impl OpenAiSseParser {
 
         while let Some(frame) = next_sse_frame(&mut self.buffer) {
             if let Some(event) = parse_sse_frame(&frame)? {
+                if std::env::var("CLAW_DEBUG_SSE").is_ok() {
+                    eprintln!("[SSE] {:?}", event);
+                }
                 events.push(event);
             }
         }
@@ -325,6 +328,13 @@ impl StreamState {
 
     fn ingest_chunk(&mut self, chunk: ChatCompletionChunk) -> Result<Vec<StreamEvent>, ApiError> {
         let mut events = Vec::new();
+
+        // Skip empty chunks (no choices, no usage) — some providers send these as keepalives
+        let has_content = !chunk.choices.is_empty() || chunk.usage.is_some();
+        if !has_content {
+            return Ok(events);
+        }
+
         if !self.message_started {
             self.message_started = true;
             events.push(StreamEvent::MessageStart(MessageStartEvent {
@@ -579,6 +589,7 @@ struct OpenAiUsage {
 
 #[derive(Debug, Deserialize)]
 struct ChatCompletionChunk {
+    #[serde(default)]
     id: String,
     #[serde(default)]
     model: Option<String>,

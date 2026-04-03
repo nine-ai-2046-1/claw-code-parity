@@ -229,12 +229,41 @@ pub fn detect_provider_kind_with_override(
 
 #[must_use]
 pub fn max_tokens_for_model(model: &str) -> u32 {
-    let canonical = resolve_model_alias(model);
-    if canonical.contains("opus") {
-        32_000
-    } else {
-        64_000
+    // Allow user override via env var
+    if let Ok(val) = std::env::var("CLAW_MAX_TOKENS") {
+        if let Ok(n) = val.trim().parse::<u32>() {
+            return n;
+        }
+        eprintln!("warning: invalid CLAW_MAX_TOKENS value '{}', ignoring", val);
     }
+
+    let canonical = resolve_model_alias(model).to_ascii_lowercase();
+
+    // Anthropic
+    if canonical.contains("opus") {
+        return 32_000;
+    }
+    if canonical.starts_with("claude") {
+        return 64_000;
+    }
+
+    // Groq-hosted open models (conservative default to stay within limits)
+    if canonical.contains("llama")
+        || canonical.contains("gemma")
+        || canonical.contains("qwen")
+        || canonical.contains("mixtral")
+        || canonical.contains("mistral")
+    {
+        return 8_000;
+    }
+
+    // xAI Grok
+    if canonical.starts_with("grok") {
+        return 32_000;
+    }
+
+    // OpenAI / Gemini / others
+    4_096
 }
 
 #[cfg(test)]
@@ -263,7 +292,12 @@ mod tests {
     #[test]
     fn keeps_existing_max_token_heuristic() {
         assert_eq!(max_tokens_for_model("opus"), 32_000);
-        assert_eq!(max_tokens_for_model("grok-3"), 64_000);
+        assert_eq!(max_tokens_for_model("claude-sonnet-4-6"), 64_000);
+        assert_eq!(max_tokens_for_model("grok-3"), 32_000);
+        assert_eq!(max_tokens_for_model("llama-3.1-8b-instant"), 8_000);
+        assert_eq!(max_tokens_for_model("gemma-7b-it"), 8_000);
+        assert_eq!(max_tokens_for_model("gpt-4o"), 4_096);
+        assert_eq!(max_tokens_for_model("gemini-2.5-flash"), 4_096);
     }
 
     #[test]
