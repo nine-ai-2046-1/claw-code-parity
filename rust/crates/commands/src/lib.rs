@@ -494,6 +494,7 @@ pub fn validate_slash_command_input(
                 if t.is_empty() { None } else { Some(t.to_string()) }
             }),
         },
+        "buddy" => SlashCommand::Buddy,
         "batch" => {
             let (yes, task_str) = match remainder {
                 Some(s) if s.trim_start().starts_with("--yes") => {
