@@ -245,6 +245,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: Some("[glob-pattern]"),
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "dream",
+        aliases: &[],
+        summary: "Distil conversation into memory (appends to .claw/CLAUDE.md)",
+        argument_hint: None,
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -313,6 +320,7 @@ pub enum SlashCommand {
     Simplify {
         files: Option<String>,
     },
+    Dream,
     Unknown(String),
 }
 
@@ -450,6 +458,7 @@ pub fn validate_slash_command_input(
                 if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
             }),
         },
+        "dream" => SlashCommand::Dream,
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1696,6 +1705,7 @@ pub fn handle_slash_command(
         | SlashCommand::Skills { .. }
         | SlashCommand::Skillify { .. }
         | SlashCommand::Simplify { .. }
+        | SlashCommand::Dream
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2092,7 +2102,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 28);
+        assert_eq!(slash_command_specs().len(), 29);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
