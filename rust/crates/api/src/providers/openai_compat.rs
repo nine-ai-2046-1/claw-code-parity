@@ -288,6 +288,9 @@ impl OpenAiSseParser {
 
         while let Some(frame) = next_sse_frame(&mut self.buffer) {
             if let Some(event) = parse_sse_frame(&frame)? {
+                if std::env::var("CLAW_DEBUG_SSE").is_ok() {
+                    eprintln!("[SSE] {:?}", event);
+                }
                 events.push(event);
             }
         }
