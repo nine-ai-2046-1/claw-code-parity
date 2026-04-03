@@ -328,6 +328,13 @@ impl StreamState {
 
     fn ingest_chunk(&mut self, chunk: ChatCompletionChunk) -> Result<Vec<StreamEvent>, ApiError> {
         let mut events = Vec::new();
+
+        // Skip empty chunks (no choices, no usage) — some providers send these as keepalives
+        let has_content = !chunk.choices.is_empty() || chunk.usage.is_some();
+        if !has_content {
+            return Ok(events);
+        }
+
         if !self.message_started {
             self.message_started = true;
             events.push(StreamEvent::MessageStart(MessageStartEvent {
