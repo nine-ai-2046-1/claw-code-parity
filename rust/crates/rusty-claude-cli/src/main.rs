@@ -17,8 +17,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use api::{
     resolve_startup_auth_source, AnthropicClient, AuthSource, ContentBlockDelta, InputContentBlock,
-    InputMessage, MessageRequest, MessageResponse, OutputContentBlock, PromptCache,
-    StreamEvent as ApiStreamEvent, ToolChoice, ToolDefinition, ToolResultContentBlock,
+    InputMessage, MessageRequest, MessageResponse, OpenAiCompatClient, OpenAiCompatConfig,
+    OutputContentBlock, PromptCache, ProviderClient, ProviderKind, StreamEvent as ApiStreamEvent,
+    ToolChoice, ToolDefinition, ToolResultContentBlock,
 };
 
 use commands::{
@@ -42,13 +43,6 @@ use serde_json::json;
 use tools::GlobalToolRegistry;
 
 const DEFAULT_MODEL: &str = "claude-opus-4-6";
-fn max_tokens_for_model(model: &str) -> u32 {
-    if model.contains("opus") {
-        32_000
-    } else {
-        64_000
-    }
-}
 const DEFAULT_DATE: &str = "2026-03-31";
 const DEFAULT_OAUTH_CALLBACK_PORT: u16 = 4545;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -117,7 +111,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             output_format,
             allowed_tools,
             permission_mode,
-        } => LiveCli::new(model, true, allowed_tools, permission_mode)?
+            provider,
+        } => LiveCli::new(model, true, allowed_tools, permission_mode, provider)?
             .run_turn_with_output(&prompt, output_format)?,
         CliAction::Login => run_login()?,
         CliAction::Logout => run_logout()?,
@@ -126,7 +121,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             model,
             allowed_tools,
             permission_mode,
-        } => run_repl(model, allowed_tools, permission_mode)?,
+            provider,
+        } => run_repl(model, allowed_tools, permission_mode, provider)?,
         CliAction::Help => print_help(),
     }
     Ok(())
@@ -162,6 +158,7 @@ enum CliAction {
         output_format: CliOutputFormat,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+        provider: Option<String>,
     },
     Login,
     Logout,
@@ -170,6 +167,7 @@ enum CliAction {
         model: String,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+        provider: Option<String>,
     },
     // prompt-mode formatting is only supported for non-interactive runs
     Help,
@@ -203,6 +201,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut allowed_tool_values = Vec::new();
     let mut rest = Vec::new();
     let mut index = 0;
+    let mut provider: Option<String> = None;
 
     while index < args.len() {
         match args[index].as_str() {
@@ -251,6 +250,23 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 permission_mode = PermissionMode::DangerFullAccess;
                 index += 1;
             }
+            "--provider" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --provider".to_string())?;
+                // Validate immediately
+                api::provider_kind_from_str(value)
+                    .ok_or_else(|| format!("unsupported provider '{}'. Supported: anthropic, claude, openai, xai, poe, groq, azure, openrouter, gemini", value))?;
+                provider = Some(value.clone());
+                index += 2;
+            }
+            flag if flag.starts_with("--provider=") => {
+                let value = &flag[11..];
+                api::provider_kind_from_str(value)
+                    .ok_or_else(|| format!("unsupported provider '{}'. Supported: anthropic, claude, openai, xai, poe, groq, azure, openrouter, gemini", value))?;
+                provider = Some(value.to_string());
+                index += 1;
+            }
             "-p" => {
                 // Claw Code compat: -p "prompt" = one-shot prompt
                 let prompt = args[index + 1..].join(" ");
@@ -263,6 +279,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                     output_format,
                     allowed_tools: normalize_allowed_tools(&allowed_tool_values)?,
                     permission_mode,
+                    provider: provider.clone(),
                 });
             }
             "--print" => {
@@ -319,6 +336,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             model,
             allowed_tools,
             permission_mode,
+            provider,
         });
     }
     if rest.first().map(String::as_str) == Some("--resume") {
@@ -352,6 +370,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 output_format,
                 allowed_tools,
                 permission_mode,
+                provider,
             })
         }
         other if other.starts_with('/') => parse_direct_slash_cli_action(&rest),
@@ -361,6 +380,7 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             output_format,
             allowed_tools,
             permission_mode,
+            provider,
         }),
     }
 }
@@ -1401,7 +1421,8 @@ fn run_resume_command(
         | SlashCommand::Model { .. }
         | SlashCommand::Permissions { .. }
         | SlashCommand::Session { .. }
-        | SlashCommand::Plugins { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Plugins { .. }
+        | SlashCommand::Skillify { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1409,8 +1430,9 @@ fn run_repl(
     model: String,
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
+    provider: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode)?;
+    let mut cli = LiveCli::new(model, true, allowed_tools, permission_mode, provider)?;
     let mut editor =
         input::LineEditor::new("> ", cli.repl_completion_candidates().unwrap_or_default());
     println!("{}", cli.startup_banner());
@@ -1477,6 +1499,7 @@ struct LiveCli {
     system_prompt: Vec<String>,
     runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
     session: SessionHandle,
+    provider: Option<String>,
 }
 
 struct HookAbortMonitor {
@@ -1540,6 +1563,7 @@ impl LiveCli {
         enable_tools: bool,
         allowed_tools: Option<AllowedToolSet>,
         permission_mode: PermissionMode,
+        provider: Option<String>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let system_prompt = build_system_prompt()?;
         let session_state = Session::new();
@@ -1554,6 +1578,7 @@ impl LiveCli {
             allowed_tools.clone(),
             permission_mode,
             None,
+            provider.clone(),
         )?;
         let cli = Self {
             model,
@@ -1562,6 +1587,7 @@ impl LiveCli {
             system_prompt,
             runtime,
             session,
+            provider,
         };
         cli.persist_session()?;
         Ok(cli)
@@ -1643,6 +1669,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            self.provider.clone(),
         )?
         .with_hook_abort_signal(hook_abort_signal.clone());
         let hook_abort_monitor = HookAbortMonitor::spawn(hook_abort_signal);
@@ -1829,6 +1856,10 @@ impl LiveCli {
                 Self::print_skills(args.as_deref())?;
                 false
             }
+            SlashCommand::Skillify { output } => {
+                self.run_skillify(output.as_deref())?;
+                false
+            }
             SlashCommand::Unknown(name) => {
                 eprintln!("{}", format_unknown_slash_command(&name));
                 false
@@ -1913,6 +1944,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         self.model.clone_from(&model);
         println!(
@@ -1958,6 +1990,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         println!(
             "{}",
@@ -1986,6 +2019,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         println!(
             "Session cleared\n  Mode             fresh session\n  Preserved model  {}\n  Permission mode  {}\n  Session          {}",
@@ -2024,6 +2058,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         self.session = SessionHandle {
             id: session_id,
@@ -2114,6 +2149,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    None, // provider
                 )?;
                 self.session = SessionHandle {
                     id: session_id,
@@ -2148,6 +2184,7 @@ impl LiveCli {
                     self.allowed_tools.clone(),
                     self.permission_mode,
                     None,
+                    None, // provider
                 )?;
                 self.session = handle;
                 println!(
@@ -2197,6 +2234,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         self.persist_session()
     }
@@ -2216,6 +2254,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             None,
+            None, // provider
         )?;
         self.persist_session()?;
         println!("{}", format_compact_report(removed, kept, skipped));
@@ -2239,6 +2278,7 @@ impl LiveCli {
             self.allowed_tools.clone(),
             self.permission_mode,
             progress,
+            None, // provider
         )?;
         let mut permission_prompter = CliPermissionPrompter::new(self.permission_mode);
         let summary = runtime.run_turn(prompt, Some(&mut permission_prompter))?;
@@ -2306,6 +2346,99 @@ impl LiveCli {
 
     fn run_issue(&self, context: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", format_issue_report(context));
+        Ok(())
+    }
+
+    fn run_skillify(&self, output: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+        let messages = &self.runtime.session().messages;
+        if messages.is_empty() {
+            println!("Skillify\n  Result           skipped\n  Reason           no conversation history to analyse");
+            return Ok(());
+        }
+
+        // Format conversation for the prompt
+        let conversation: String = messages
+            .iter()
+            .filter_map(|msg| {
+                let role = match msg.role {
+                    runtime::MessageRole::User => "USER",
+                    runtime::MessageRole::Assistant => "ASSISTANT",
+                    _ => return None,
+                };
+                let text: String = msg
+                    .blocks
+                    .iter()
+                    .filter_map(|block| match block {
+                        runtime::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if text.trim().is_empty() {
+                    None
+                } else {
+                    Some(format!("[{role}]: {}", &text[..text.len().min(800)]))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let prompt = format!(
+            r#"You are a Skill design expert. Analyse the following conversation and generate a SKILL.md file in this exact format:
+
+---
+name: {{skill-name}}
+description: {{one-line description}}
+when_to_use: |
+  {{when to trigger this skill, with examples}}
+argument-hint: "{{argument hint}}"
+---
+
+# {{Skill Title}}
+
+## Goal
+{{clear description of the skill's goal}}
+
+## Steps
+
+### 1. {{Step name}}
+{{step description}}
+
+**Success criteria**: {{how to know this step is done}}
+
+### 2. {{Step name}}
+...
+
+Rules:
+- Identify repeatable workflow patterns
+- Find user preferences and corrections
+- Determine input parameters
+- Each step must have clear success criteria
+- Write descriptions in the same language as the conversation
+
+Conversation:
+{conversation}
+
+Output only the SKILL.md content, no other explanation."#,
+            conversation = conversation
+        );
+
+        println!("Skillify\n  Analysing {} messages...", messages.len());
+        let skill_md = self.run_internal_prompt_text(&prompt, false)?;
+
+        match output {
+            Some(path) => {
+                let output_path = std::path::Path::new(path);
+                if let Some(parent) = output_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(output_path, &skill_md)?;
+                println!("  Result           written\n  File             {path}");
+            }
+            None => {
+                println!("  Result           generated\n\n{skill_md}");
+            }
+        }
         Ok(())
     }
 }
@@ -3656,12 +3789,14 @@ fn build_runtime(
     allowed_tools: Option<AllowedToolSet>,
     permission_mode: PermissionMode,
     progress_reporter: Option<InternalPromptProgressReporter>,
+    provider: Option<String>,
 ) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
 {
     let (feature_config, tool_registry) = build_runtime_plugin_state()?;
+
     let mut runtime = ConversationRuntime::new_with_features(
         session,
-        AnthropicRuntimeClient::new(
+        AnthropicRuntimeClient::new_with_provider(
             session_id,
             model,
             enable_tools,
@@ -3669,6 +3804,7 @@ fn build_runtime(
             allowed_tools.clone(),
             tool_registry.clone(),
             progress_reporter,
+            provider,
         )?,
         CliToolExecutor::new(allowed_tools.clone(), emit_output, tool_registry.clone()),
         permission_policy(permission_mode, &feature_config, &tool_registry)
@@ -3766,7 +3902,7 @@ impl runtime::PermissionPrompter for CliPermissionPrompter {
 
 struct AnthropicRuntimeClient {
     runtime: tokio::runtime::Runtime,
-    client: AnthropicClient,
+    client: ProviderClient,
     model: String,
     enable_tools: bool,
     emit_output: bool,
@@ -3785,11 +3921,32 @@ impl AnthropicRuntimeClient {
         tool_registry: GlobalToolRegistry,
         progress_reporter: Option<InternalPromptProgressReporter>,
     ) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_provider(session_id, model, enable_tools, emit_output, allowed_tools, tool_registry, progress_reporter, None)
+    }
+
+    fn new_with_provider(
+        session_id: &str,
+        model: String,
+        enable_tools: bool,
+        emit_output: bool,
+        allowed_tools: Option<AllowedToolSet>,
+        tool_registry: GlobalToolRegistry,
+        progress_reporter: Option<InternalPromptProgressReporter>,
+        provider_override: Option<String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let kind = api::detect_provider_kind_with_override(&model, provider_override.as_deref())
+            .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
+        let client = match kind {
+            ProviderKind::Anthropic => {
+                let auth = resolve_cli_auth_source()?;
+                ProviderClient::from_model_with_override(&model, Some(auth), provider_override.as_deref())?
+                    .with_prompt_cache(PromptCache::new(session_id))
+            }
+            _ => ProviderClient::from_model_with_override(&model, None, provider_override.as_deref())?,
+        };
         Ok(Self {
             runtime: tokio::runtime::Runtime::new()?,
-            client: AnthropicClient::from_auth(resolve_cli_auth_source()?)
-                .with_base_url(api::read_base_url())
-                .with_prompt_cache(PromptCache::new(session_id)),
+            client,
             model,
             enable_tools,
             emit_output,
@@ -3818,7 +3975,7 @@ impl ApiClient for AnthropicRuntimeClient {
         }
         let message_request = MessageRequest {
             model: self.model.clone(),
-            max_tokens: max_tokens_for_model(&self.model),
+            max_tokens: api::max_tokens_for_model(&self.model),
             messages: convert_messages(&request.messages),
             system: (!request.system_prompt.is_empty()).then(|| request.system_prompt.join("\n\n")),
             tools: self
@@ -4588,10 +4745,12 @@ fn response_to_events(
     Ok(events)
 }
 
-fn push_prompt_cache_record(client: &AnthropicClient, events: &mut Vec<AssistantEvent>) {
-    if let Some(record) = client.take_last_prompt_cache_record() {
-        if let Some(event) = prompt_cache_record_to_runtime_event(record) {
-            events.push(AssistantEvent::PromptCache(event));
+fn push_prompt_cache_record(client: &ProviderClient, events: &mut Vec<AssistantEvent>) {
+    if let ProviderClient::Anthropic(anthropic_client) = client {
+        if let Some(record) = anthropic_client.take_last_prompt_cache_record() {
+            if let Some(event) = prompt_cache_record_to_runtime_event(record) {
+                events.push(AssistantEvent::PromptCache(event));
+            }
         }
     }
 }
@@ -4944,6 +5103,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -4963,6 +5123,7 @@ mod tests {
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -4984,6 +5145,7 @@ mod tests {
                 output_format: CliOutputFormat::Json,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -5004,6 +5166,7 @@ mod tests {
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -5037,6 +5200,7 @@ mod tests {
                 model: DEFAULT_MODEL.to_string(),
                 allowed_tools: None,
                 permission_mode: PermissionMode::ReadOnly,
+            provider: None,
             }
         );
     }
@@ -5059,6 +5223,7 @@ mod tests {
                         .collect()
                 ),
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -5160,6 +5325,7 @@ mod tests {
                 output_format: CliOutputFormat::Text,
                 allowed_tools: None,
                 permission_mode: PermissionMode::DangerFullAccess,
+            provider: None,
             }
         );
     }
@@ -5422,6 +5588,7 @@ mod tests {
                 true,
                 None,
                 PermissionMode::DangerFullAccess,
+                None,
             )
             .expect("cli should initialize")
             .startup_banner()
