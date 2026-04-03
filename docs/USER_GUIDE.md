@@ -69,7 +69,6 @@ export CLAW_PROVIDER=gemini
 | `--model <name>` | Override model (e.g. `opus`, `gemini-2.5-flash`) |
 | `--output-format json` | JSON output (for scripting) |
 | `--permission-mode read-only` | Restrict tool access |
-| `--yes` / `-y` | Skip confirmations |
 | `CLAW_MAX_TOKENS=8000` | Override max tokens |
 | `CLAW_DEBUG_SSE=1` | Debug streaming output |
 
@@ -126,7 +125,7 @@ Type these in the REPL (or pass via `--resume`):
 | `/simplify [glob]` | 3-dimension code review | `/simplify src/**/*.rs` |
 | `/dream` | Distil conversation into memory | `/dream` |
 | `/buddy` | Show your companion | `/buddy` |
-| `/batch <task> [--yes]` | Break task into subtasks & execute | `/batch "refactor auth module" --yes` |
+| `/batch <task> [--yes]` | Break task into subtasks & execute. Use `--yes` to skip confirmation prompt | `/batch --yes "refactor auth module"` |
 | `/kairos <task>` | Coordinator + Workers architecture | `/kairos "analyse security issues"` |
 | `/bughunter [scope]` | Find bugs in codebase | `/bughunter src/` |
 | `/ultraplan [task]` | Deep multi-step execution plan | `/ultraplan "migrate to async"` |

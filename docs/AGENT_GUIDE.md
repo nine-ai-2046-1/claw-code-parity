@@ -71,6 +71,8 @@ claw --resume .claw/sessions/session-xxx.jsonl /export output.txt
 
 Supported resume commands: `help`, `status`, `compact`, `clear`, `cost`, `config`, `memory`, `init`, `diff`, `version`, `export`, `agents`, `skills`
 
+> Note: `/status` outputs plain text only. `--output-format json` is not supported in `--resume` mode.
+
 ---
 
 ## AI-Powered Slash Commands (Agent Use)
