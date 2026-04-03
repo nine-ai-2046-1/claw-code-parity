@@ -1423,7 +1423,8 @@ fn run_resume_command(
         | SlashCommand::Session { .. }
         | SlashCommand::Plugins { .. }
         | SlashCommand::Skillify { .. }
-        | SlashCommand::Simplify { .. } => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Simplify { .. }
+        | SlashCommand::Dream => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1863,6 +1864,10 @@ impl LiveCli {
             }
             SlashCommand::Simplify { files } => {
                 self.run_simplify(files.as_deref())?;
+                false
+            }
+            SlashCommand::Dream => {
+                self.run_dream()?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2444,6 +2449,60 @@ Output only the SKILL.md content, no other explanation."#,
                 println!("  Result           generated\n\n{skill_md}");
             }
         }
+        Ok(())
+    }
+
+    fn run_dream(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let messages = &self.runtime.session().messages;
+        if messages.is_empty() {
+            println!("Dream\n  Result           skipped\n  Reason           no conversation history");
+            return Ok(());
+        }
+
+        let conversation: String = messages
+            .iter()
+            .filter_map(|msg| {
+                let role = match msg.role {
+                    runtime::MessageRole::User => "USER",
+                    runtime::MessageRole::Assistant => "ASSISTANT",
+                    _ => return None,
+                };
+                let text: String = msg.blocks.iter()
+                    .filter_map(|b| match b {
+                        runtime::ContentBlock::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>().join(" ");
+                if text.trim().is_empty() { None }
+                else { Some(format!("[{role}]: {}", &text[..text.len().min(600)])) }
+            })
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let prompt = format!(
+            "You are a memory distillation expert. Analyse this conversation and extract information worth remembering long-term.\n\nOutput a concise memory report:\n\n## New Discoveries\n- [type: user/feedback/project/reference] Title: one-line content\n\n## Needs Update\n- Which existing memories may be outdated (if any)\n\n## Suggested Deletions\n- Which memories are no longer relevant (if any)\n\nKeep it brief. One memory per line. Use the same language as the conversation.\nIf nothing is worth remembering, output: \"Nothing worth remembering in this session.\"\n\nConversation:\n{conversation}",
+            conversation = conversation
+        );
+
+        println!("Dream\n  Distilling {} messages...", messages.len());
+        let report = self.run_internal_prompt_text(&prompt, false)?;
+
+        let cwd = env::current_dir()?;
+        let claw_dir = cwd.join(".claw");
+        fs::create_dir_all(&claw_dir)?;
+        let memory_path = claw_dir.join("CLAUDE.md");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let entry = format!("\n\n<!-- dream:{now} -->\n{report}");
+
+        let mut file = fs::OpenOptions::new().create(true).append(true).open(&memory_path)?;
+        use std::io::Write;
+        file.write_all(entry.as_bytes())?;
+
+        println!("  Result           written\n  File             {}\n\n{report}", memory_path.display());
         Ok(())
     }
 
