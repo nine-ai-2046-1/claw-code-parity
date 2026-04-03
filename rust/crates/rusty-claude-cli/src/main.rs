@@ -1425,7 +1425,8 @@ fn run_resume_command(
         | SlashCommand::Skillify { .. }
         | SlashCommand::Simplify { .. }
         | SlashCommand::Dream
-        | SlashCommand::Buddy => Err("unsupported resumed slash command".into()),
+        | SlashCommand::Buddy
+        | SlashCommand::Batch { .. } => Err("unsupported resumed slash command".into()),
     }
 }
 
@@ -1873,6 +1874,10 @@ impl LiveCli {
             }
             SlashCommand::Buddy => {
                 self.run_buddy()?;
+                false
+            }
+            SlashCommand::Batch { task, yes } => {
+                self.run_batch(task.as_deref(), yes)?;
                 false
             }
             SlashCommand::Unknown(name) => {
@@ -2454,6 +2459,82 @@ Output only the SKILL.md content, no other explanation."#,
                 println!("  Result           generated\n\n{skill_md}");
             }
         }
+        Ok(())
+    }
+
+    fn run_batch(&self, task: Option<&str>, yes: bool) -> Result<(), Box<dyn std::error::Error>> {
+        let task = match task {
+            Some(t) if !t.trim().is_empty() => t.trim(),
+            _ => {
+                println!("Batch\n  Usage  /batch <task description> [--yes]");
+                return Ok(());
+            }
+        };
+
+        // Phase 1: Plan
+        let plan_prompt = format!(
+            "Break this task into 3-5 independent subtasks. Each subtask must be self-contained.\n\nTask: {task}\n\nRespond with JSON only:\n{{\"subtasks\":[{{\"id\":1,\"title\":\"...\",\"description\":\"...\",\"success_criteria\":\"...\"}}]}}"
+        );
+        println!("Batch\n  Planning: {task}\n");
+        let plan_text = self.run_internal_prompt_text(&plan_prompt, false)?;
+
+        // Parse JSON (extract from possible markdown)
+        let json_str = if let (Some(s), Some(e)) = (plan_text.find('{'), plan_text.rfind('}')) {
+            &plan_text[s..=e]
+        } else {
+            println!("  Result           failed\n  Reason           could not parse plan");
+            return Ok(());
+        };
+        let plan: serde_json::Value = serde_json::from_str(json_str)
+            .unwrap_or(serde_json::Value::Null);
+        let subtasks = match plan["subtasks"].as_array() {
+            Some(s) if !s.is_empty() => s.clone(),
+            _ => {
+                println!("  Result           failed\n  Reason           no subtasks generated");
+                return Ok(());
+            }
+        };
+
+        println!("  Subtasks ({}):", subtasks.len());
+        for st in &subtasks {
+            println!("    {}. {}", st["id"], st["title"].as_str().unwrap_or("?"));
+        }
+
+        // Confirm unless --yes
+        if !yes {
+            print!("\n  Execute? [y/N]: ");
+            use std::io::Write;
+            std::io::stdout().flush()?;
+            if !std::io::stdin().lines().next()
+                .and_then(|l| l.ok())
+                .map(|l| matches!(l.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+                .unwrap_or(false)
+            {
+                println!("  Result           cancelled");
+                return Ok(());
+            }
+        }
+
+        // Phase 2: Execute
+        println!();
+        let mut passed = 0usize;
+        for st in &subtasks {
+            let title = st["title"].as_str().unwrap_or("?");
+            let desc = st["description"].as_str().unwrap_or("");
+            let criteria = st["success_criteria"].as_str().unwrap_or("");
+            let worker_prompt = format!(
+                "Complete this subtask and report the result.\n\nSubtask: {title}\nDescription: {desc}\nSuccess criteria: {criteria}\n\nRespond with:\nSTATUS: SUCCESS or FAILED\nSUMMARY: one-line summary\nDETAILS: details"
+            );
+            print!("  [{}/{}] {title}... ", st["id"], subtasks.len());
+            use std::io::Write;
+            std::io::stdout().flush()?;
+            let result = self.run_internal_prompt_text(&worker_prompt, false)?;
+            let success = result.contains("STATUS: SUCCESS");
+            if success { passed += 1; }
+            println!("{}", if success { "✅" } else { "❌" });
+        }
+
+        println!("\n  Result           {passed}/{} subtasks succeeded", subtasks.len());
         Ok(())
     }
 

@@ -259,6 +259,13 @@ const SLASH_COMMAND_SPECS: &[SlashCommandSpec] = &[
         argument_hint: None,
         resume_supported: false,
     },
+    SlashCommandSpec {
+        name: "batch",
+        aliases: &[],
+        summary: "Break a large task into subtasks and execute them sequentially",
+        argument_hint: Some("<task> [--yes]"),
+        resume_supported: false,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -329,6 +336,10 @@ pub enum SlashCommand {
     },
     Dream,
     Buddy,
+    Batch {
+        task: Option<String>,
+        yes: bool,
+    },
     Unknown(String),
 }
 
@@ -468,6 +479,19 @@ pub fn validate_slash_command_input(
         },
         "dream" => SlashCommand::Dream,
         "buddy" => SlashCommand::Buddy,
+        "batch" => {
+            let (yes, task_str) = match remainder {
+                Some(s) if s.trim_start().starts_with("--yes") => {
+                    (true, Some(s.trim_start().trim_start_matches("--yes").trim().to_string()))
+                }
+                Some(s) => (false, Some(s.trim().to_string())),
+                None => (false, None),
+            };
+            SlashCommand::Batch {
+                task: task_str.filter(|s| !s.is_empty()),
+                yes,
+            }
+        }
         other => SlashCommand::Unknown(other.to_string()),
     }))
 }
@@ -1716,6 +1740,7 @@ pub fn handle_slash_command(
         | SlashCommand::Simplify { .. }
         | SlashCommand::Dream
         | SlashCommand::Buddy
+        | SlashCommand::Batch { .. }
         | SlashCommand::Unknown(_) => None,
     }
 }
@@ -2112,7 +2137,7 @@ mod tests {
         assert!(help.contains("aliases: /plugins, /marketplace"));
         assert!(help.contains("/agents [list|help]"));
         assert!(help.contains("/skills [list|help]"));
-        assert_eq!(slash_command_specs().len(), 30);
+        assert_eq!(slash_command_specs().len(), 31);
         assert_eq!(resume_supported_slash_commands().len(), 14);
     }
 
