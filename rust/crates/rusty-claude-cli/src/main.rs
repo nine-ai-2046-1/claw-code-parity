@@ -2484,7 +2484,43 @@ Output only the SKILL.md content, no other explanation."#,
         const STATS: &[&str] = &["DEBUGGING","PATIENCE","CHAOS","WISDOM","SNARK"];
         const STARS: &[&str] = &["★","★★","★★★","★★★★","★★★★★"];
 
-        let seed = fnv1a(&format!("{}{}", self.session.id, SALT));
+        let claw_dir = env::current_dir()?.join(".claw");
+        fs::create_dir_all(&claw_dir)?;
+        let soul_path = claw_dir.join("buddy.json");
+
+        // Load existing soul or create new one with a stable seed
+        let soul: serde_json::Value = if soul_path.exists() {
+            serde_json::from_str(&fs::read_to_string(&soul_path)?).unwrap_or(serde_json::Value::Null)
+        } else {
+            // Generate stable seed from user identity (hostname + username)
+            let user = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_default();
+            let host = std::env::var("HOSTNAME").unwrap_or_else(|_| {
+                std::fs::read_to_string("/etc/hostname").unwrap_or_default().trim().to_string()
+            });
+            let stable_seed = fnv1a(&format!("{user}{host}{SALT}"));
+            let mut init_rng = mulberry32(stable_seed);
+
+            let names = ["Pixel","Byte","Glitch","Spark","Echo","Nova","Flux","Zap","Rust","Ferris"];
+            let personalities = [
+                "Loves debugging, curious about every bug",
+                "Extremely patient, never gives up",
+                "Full of chaotic energy, finds unexpected solutions",
+                "Deep wisdom, always finds the most elegant approach",
+                "Snarky but lovable, has opinions about bad code",
+            ];
+            let soul = serde_json::json!({
+                "name": names[(init_rng() * names.len() as f64) as usize],
+                "personality": personalities[(init_rng() * personalities.len() as f64) as usize],
+                "seed": stable_seed,
+            });
+            fs::write(&soul_path, serde_json::to_string_pretty(&soul)?)?;
+            println!("🥚 A new companion hatched!\n");
+            soul
+        };
+
+        // Use stored seed for deterministic Bones
+        let seed = soul["seed"].as_u64().map(|s| s as u32)
+            .unwrap_or_else(|| fnv1a(&format!("{}{SALT}", soul["name"].as_str().unwrap_or(""))));
         let mut rng = mulberry32(seed);
 
         let total: u32 = WEIGHTS.iter().sum();
@@ -2503,30 +2539,6 @@ Output only the SKILL.md content, no other explanation."#,
             else if i == dump { (rng() * floor as f64) as u32 }
             else { floor + (rng() * (100.0 - floor as f64) / 2.0) as u32 }
         }).collect();
-
-        let claw_dir = env::current_dir()?.join(".claw");
-        fs::create_dir_all(&claw_dir)?;
-        let soul_path = claw_dir.join("buddy.json");
-
-        let soul: serde_json::Value = if soul_path.exists() {
-            serde_json::from_str(&fs::read_to_string(&soul_path)?).unwrap_or(serde_json::Value::Null)
-        } else {
-            let names = ["Pixel","Byte","Glitch","Spark","Echo","Nova","Flux","Zap","Rust","Ferris"];
-            let personalities = [
-                "Loves debugging, curious about every bug",
-                "Extremely patient, never gives up",
-                "Full of chaotic energy, finds unexpected solutions",
-                "Deep wisdom, always finds the most elegant approach",
-                "Snarky but lovable, has opinions about bad code",
-            ];
-            let soul = serde_json::json!({
-                "name": names[(rng() * names.len() as f64) as usize],
-                "personality": personalities[(rng() * personalities.len() as f64) as usize],
-            });
-            fs::write(&soul_path, serde_json::to_string_pretty(&soul)?)?;
-            println!("🥚 A new companion hatched!\n");
-            soul
-        };
 
         let name = soul["name"].as_str().unwrap_or("???");
         let personality = soul["personality"].as_str().unwrap_or("???");
